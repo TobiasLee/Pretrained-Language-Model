@@ -360,11 +360,9 @@ def main():
 
         args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
-
-
         # rewrite data processing here
         assert args.task_name == "MNLI", "the script is designed for MNLI only now"
-        mnli_datasets = load_dataset("text", data_files=os.path.join(args.data_dir, "train_aug_10k.tsv"))
+        mnli_datasets = load_dataset("text", data_files=os.path.join(args.data_dir, "train_aug.tsv"))
         label_classes = processor.get_labels()
         label_map = {label: i for i, label in enumerate(label_classes)}
 
@@ -570,7 +568,7 @@ def main():
                             loss_mse = MSELoss()
                             cls_loss = loss_mse(student_logits.view(-1), label_ids.view(-1))
 
-                        loss = cls_loss
+                        loss = cls_loss + 0 * loss_mse(student_atts[0], teacher_atts[0])+ 0 * loss_mse(teacher_reps[0], student_reps[0])
                         tr_cls_loss += cls_loss.item()
 
                 # if n_gpu > 1:
@@ -591,7 +589,7 @@ def main():
                     optimizer.zero_grad()
                     global_step += 1
 
-                if (global_step + 1) % args.eval_step == 0:
+                if (global_step + 1) % args.eval_step == 0 and args.local_rank == 0:
                     logger.info("***** Running evaluation *****")
                     logger.info("  Epoch = {} iter {} step".format(epoch_, global_step))
                     logger.info("  Num examples = %d", len(eval_examples))
@@ -633,7 +631,7 @@ def main():
                             best_dev_acc = result['mcc']
                             save_model = True
 
-                    if save_model:
+                    if save_model and args.local_rank == 0:
                         logger.info("***** Save model *****")
 
                         model_to_save = student_model.module if hasattr(student_model, 'module') else student_model
@@ -658,7 +656,7 @@ def main():
                             eval_examples = processor.get_dev_examples(args.data_dir)
 
                             eval_features = convert_examples_to_features(
-                                eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
+                                eval_examples, label_list, args.max_seq_length, tokenizer, output_mode,logger)
                             eval_data, eval_labels = get_tensor_data(output_mode, eval_features)
 
                             logger.info("***** Running mm evaluation *****")
