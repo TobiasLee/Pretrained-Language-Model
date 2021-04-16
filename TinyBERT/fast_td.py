@@ -28,7 +28,7 @@ from datasets import load_dataset
 from data import *
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
-import torch.cuda.amp.autocast as autocast
+from torch.cuda.amp import autocast 
 
 
 
@@ -349,22 +349,21 @@ def main():
     tokenizer = BertTokenizer.from_pretrained(args.student_model, do_lower_case=args.do_lower_case)
 
     if not args.do_eval:
-        if not args.aug_train:
-            train_examples = processor.get_train_examples(args.data_dir)
-        else:
-            train_examples = processor.get_aug_examples(args.data_dir)
+        #if not args.aug_train:
+        #    train_examples = processor.get_train_examples(args.data_dir)
+        #else:
+        #    train_examples = processor.get_aug_examples(args.data_dir)
         if args.gradient_accumulation_steps < 1:
             raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
                 args.gradient_accumulation_steps))
 
         args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
-        num_train_optimization_steps = int(
-            len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+
 
         # rewrite data processing here
         assert args.task_name == "MNLI", "the script is designed for MNLI only now"
-        mnli_datasets = load_dataset("text", data_files=os.path.join(args.data_dir, "train_aug.tsv"))
+        mnli_datasets = load_dataset("text", data_files=os.path.join(args.data_dir, "train_aug_10k.tsv"))
         label_classes = processor.get_labels()
         label_map = {label: i for i, label in enumerate(label_classes)}
 
@@ -415,7 +414,8 @@ def main():
         #                                               args.max_seq_length, tokenizer, output_mode, logger)
         train_data = mnli_datasets['train']
         # train_data, _ = get_tensor_data(output_mode, train_features)
-
+        num_train_optimization_steps = int(
+            len(train_train) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
         logger.info("Initializing Distributed Environment")
         torch.cuda.set_device(args.local_rank)
         dist.init_process_group(backend="nccl")
