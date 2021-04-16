@@ -144,17 +144,23 @@ class DataAugmentor(object):
         return [self.ids_to_tokens[idx] for idx in candidate_ids][:self.M]
 
     def _masked_language_model(self, sent, word_pieces, mask_id):
+
+        if mask_id > 511:
+            return [] 
+
         tokenized_text = self.tokenizer.tokenize(sent)
         tokenized_text = ['[CLS]'] + tokenized_text
         tokenized_len = len(tokenized_text)
 
         tokenized_text = word_pieces + ['[SEP]'] + tokenized_text[1:] + ['[SEP]']
+        segments_ids = [0] * (tokenized_len + 1) + [1] * (len(tokenized_text) - tokenized_len - 1)
 
         if len(tokenized_text) > 512:
             tokenized_text = tokenized_text[:512]
+            segments_ids = segments_ids[:512] 
 
         token_ids = self.tokenizer.convert_tokens_to_ids(tokenized_text)
-        segments_ids = [0] * (tokenized_len + 1) + [1] * (len(tokenized_text) - tokenized_len - 1)
+
 
         tokens_tensor = torch.tensor([token_ids]).to(device)
         segments_tensor = torch.tensor([segments_ids]).to(device)
