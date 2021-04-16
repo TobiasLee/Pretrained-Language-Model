@@ -29,7 +29,7 @@ from data import *
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.cuda.amp import autocast 
-
+from typing import List 
 
 
 csv.field_size_limit(sys.maxsize)
@@ -307,13 +307,14 @@ def main():
     mcc_tasks = ["cola"]
 
     # Prepare devices
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+
     n_gpu = torch.cuda.device_count()
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt='%m/%d/%Y %H:%M:%S',
                         level=logging.INFO)
 
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
     logger.info("device: {} n_gpu: {}".format(device, n_gpu))
 
     # Prepare seed
@@ -380,12 +381,13 @@ def main():
             seq_length_list = []
             labels_list = []
             labels = [e[-1] for e in splits]
+            # print(len(labels)) 
             for token_a, token_b, l in zip(tokens_s1, tokens_s2, labels):  # zip(tokens_as, tokens_bs):
                 tokens = ["[CLS]"] + token_a + ["[SEP]"]
                 segment_ids = [0] * len(tokens)
                 tokens += token_b + ["[SEP]"]
                 segment_ids += [1] * (len(token_b) + 1)
-                input_ids = tokenizer.convert_tokens_to_ids(tokens)
+                input_ids = tokenizer.convert_tokens_to_ids(tokens) # tokenize to id 
                 input_mask = [1] * len(input_ids)
                 seq_length = len(input_ids)
                 padding = [0] * (max_seq_length - len(input_ids))
@@ -405,17 +407,21 @@ def main():
                        "input_mask": input_mask_list,
                        "segment_ids": segment_ids_list,
                        "seq_length": seq_length_list,
-                       "label_id": label_list}
+                       "label_ids": labels_list}
 
             return results
-        mnli_datasets.map(preprocess_func, batched=True)
+
+
+        mnli_datasets = mnli_datasets.map(preprocess_func, batched=True)
 
         # train_features = convert_examples_to_features(train_examples, label_list,
         #                                               args.max_seq_length, tokenizer, output_mode, logger)
-        train_data = mnli_datasets['train']
+        train_data = mnli_datasets['train'].remove_columns('text') 
+
+        print(train_data[0])
         # train_data, _ = get_tensor_data(output_mode, train_features)
         num_train_optimization_steps = int(
-            len(train_train) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+            len(train_data) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
         logger.info("Initializing Distributed Environment")
         torch.cuda.set_device(args.local_rank)
         dist.init_process_group(backend="nccl")
@@ -432,8 +438,11 @@ def main():
     # DDP setting
     local_rank = args.local_rank
     torch.cuda.set_device(local_rank)
-    student_model = TinyBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels)
 
+
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    student_model = TinyBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels).to(device)
+     
     if args.do_eval:
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_examples))
@@ -447,10 +456,10 @@ def main():
             logger.info("  %s = %s", key, str(result[key]))
     else:
         logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_examples))
+        logger.info("  Num examples = %d", len(train_data))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
-        teacher_model = TinyBertForSequenceClassification.from_pretrained(args.teacher_model, num_labels=num_labels)
+        teacher_model = TinyBertForSequenceClassification.from_pretrained(args.teacher_model, num_labels=num_labels).to(device)
         student_model = DDP(student_model, device_ids=[local_rank], output_device=local_rank)
         teacher_model = DDP(teacher_model, device_ids=[local_rank], output_device=local_rank)
         # Prepare optimizer
@@ -500,20 +509,31 @@ def main():
 
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration", ascii=True)):
                 # optimizer.zero_grad()
-                batch = tuple(torch.tensor(t, dtype=torch.long).to(device) for t in batch)
-
-                input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch
-                if input_ids.size()[0] != args.train_batch_size:
+                #batch = tuple(torch.tensor(t, dtype=torch.long).to(device) for t in batch)
+                # print(batch)
+                inputs = {}
+                for k, v in batch.items():
+                    if isinstance(v, torch.Tensor):
+                        inputs[k] = v.to(device)
+                    elif isinstance(v, List):
+                        inputs[k]  =torch.stack(v, dim=1).to(device)
+                        
+                # inputs = {k: torch.tensor(v, dtype=torch.long).to(device) for k, v in batch.items()}
+                # input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch
+                # print([(k, inputs[k].size()) for k in inputs])
+                if inputs['input_ids'].size()[0] != args.train_batch_size:
                     continue
 
                 att_loss = 0.
                 rep_loss = 0.
                 cls_loss = 0.
                 with autocast():
-                    student_logits, student_atts, student_reps = student_model(input_ids, segment_ids, input_mask,
+                    student_logits, student_atts, student_reps = student_model(inputs['input_ids'], 
+                                            inputs['segment_ids'], inputs['input_mask'],
                                                                                is_student=True)
                     with torch.no_grad():
-                        teacher_logits, teacher_atts, teacher_reps = teacher_model(input_ids, segment_ids, input_mask)
+                        teacher_logits, teacher_atts, teacher_reps = teacher_model(inputs['input_ids'], 
+                                            inputs['segment_ids'], inputs['input_mask'])
 
                     if not args.pred_distill:
                         teacher_layer_num = len(teacher_atts)
@@ -561,7 +581,7 @@ def main():
                 # loss.backward()
 
                 tr_loss += loss.item()
-                nb_tr_examples += label_ids.size(0)
+                nb_tr_examples += inputs['label_ids'].size(0)
                 nb_tr_steps += 1
 
                 if (step + 1) % args.gradient_accumulation_steps == 0:
